@@ -1,0 +1,173 @@
+%%writefile app.py
+# paste your entire Streamlit code here (the one you shared)
+
+# app.py
+import os
+import streamlit as st
+from typing import Dict, Any
+
+st.set_page_config(page_title="Colab → Streamlit Agent", layout="wide")
+
+# --- Helpers to load secrets safely ---
+def get_secret(name: str):
+    # 1) Streamlit secrets (recommended for Streamlit Cloud)
+    try:
+        val = st.secrets.get(name)
+    except Exception:
+        val = None
+    # 2) environment variable fallback
+    if not val:
+        val = os.environ.get(name)
+    return val
+
+# --- UI: sidebar for config ---
+st.sidebar.title("Agent Configuration")
+GEMINI_API_KEY = get_secret("GEMINI_API_KEY")
+WEATHERSTACK_KEY = get_secret("WEATHERSTACK_KEY")
+
+st.sidebar.markdown("**API keys** (set these in Streamlit Cloud / environment variables)")
+st.sidebar.write("GEMINI_API_KEY: " + ("🔒 set" if GEMINI_API_KEY else "❗ not set"))
+st.sidebar.write("WEATHERSTACK_KEY: " + ("🔒 set" if WEATHERSTACK_KEY else "❗ not set"))
+
+model_choice = st.sidebar.selectbox("LLM model", ["gemini-2.5-flash", "gemini-1.5-pro"], index=0)
+temperature = st.sidebar.slider("temperature", 0.0, 1.0, 0.0, 0.05)
+show_raw = st.sidebar.checkbox("Show raw agent output", value=False)
+clear_button = st.sidebar.button("Clear chat")
+
+# --- Chat area ---
+st.title("Agent UI — Streamlit Deployment")
+st.markdown("Type a query and the agent (LangChain + Google Generative) will respond.")
+
+if "history" not in st.session_state:
+    st.session_state.history = []  # list of (role, text) tuples
+
+if clear_button:
+    st.session_state.history = []
+
+# --- Lazy import & agent creation ---
+@st.cache_resource(show_spinner=False)
+def create_agent_instance(model: str, temperature_val: float) -> Dict[str, Any]:
+    """
+    Create and return a dict with agent_executor or fallbacks.
+    Cached so we don't re-init on every interaction.
+    """
+    # We'll attempt to import the same libs you used in Colab.
+    try:
+        from langchain_google_genai import ChatGoogleGenerativeAI
+        from langchain_core.tools import tool
+        from langchain_community.tools import DuckDuckGoSearchRun
+    except Exception as e:
+        return {"error": f"Missing package imports: {e}. Make sure requirements.txt includes required packages."}
+
+    # Create LLM
+    google_key = get_secret("GEMINI_API_KEY")
+    if not google_key:
+        return {"error": "GEMINI_API_KEY is not set. Add it to Streamlit Secrets or the environment."}
+
+    llm = ChatGoogleGenerativeAI(
+        model=model,
+        temperature=temperature_val,
+        google_api_key=google_key
+    )
+
+    # Create simple search tool (DuckDuckGo)
+    try:
+        search_tool = DuckDuckGoSearchRun()
+    except Exception:
+        search_tool = None
+
+    # A simple weather tool using weatherstack (wrap as langchain tool if available)
+    def get_weather_data(city: str) -> dict:
+        import requests
+        ws_key = get_secret("WEATHERSTACK_KEY")
+        if not ws_key:
+            return {"error": "WEATHERSTACK_KEY not set."}
+        url = f"https://api.weatherstack.com/current?access_key={ws_key}&query={city}"
+        try:
+            r = requests.get(url, timeout=10)
+            return r.json()
+        except Exception as e:
+            return {"error": str(e)}
+
+    # If langchain tool decorator exists, wrap; else provide callable
+    try:
+        from langchain_core.tools import tool as lc_tool
+        @lc_tool
+        def weather_tool(city: str) -> str:
+            res = get_weather_data(city)
+            return str(res)
+    except Exception:
+        # fallback: simple function
+        weather_tool = get_weather_data
+
+    # Create React Agent (LangChain)
+    try:
+        from langchain.agents import create_react_agent, AgentExecutor
+        from langchain import hub
+
+        # pull a default prompt (like you did in Colab)
+        try:
+            prompt = hub.pull("hwchase17/react")
+        except Exception:
+            prompt = None
+
+        tools = []
+        if search_tool:
+            tools.append(search_tool)
+        tools.append(weather_tool)
+
+        agent = create_react_agent(llm=llm, prompt=prompt, tools=tools)
+        agent_executor = AgentExecutor(agent=agent, tools=tools, verbose=False)
+        return {"agent_executor": agent_executor, "llm": llm}
+    except Exception as e:
+        # If agent creation fails, return an error artifact for UI to display
+        return {"error": f"Failed to create agent: {e}"}
+
+
+agent_bundle = create_agent_instance(model_choice, temperature)
+
+if "error" in agent_bundle:
+    st.error(agent_bundle["error"])
+    st.stop()
+
+agent_executor = agent_bundle.get("agent_executor")
+
+# --- Input box & submit ---
+with st.form("query_form", clear_on_submit=False):
+    user_input = st.text_area("Your message", height=120, placeholder="Ask the agent anything...")
+    submitted = st.form_submit_button("Send")
+
+if submitted and user_input:
+    st.session_state.history.append(("user", user_input))
+    with st.spinner("Agent is thinking..."):
+        try:
+            # call agent executor the same way you did in Colab
+            resp = agent_executor.invoke({"input": user_input})
+            # agent_executor.invoke usually returns a dict with 'output' or similar; try to be safe
+            output_text = ""
+            if isinstance(resp, dict):
+                output_text = resp.get("output") or resp.get("result") or str(resp)
+            else:
+                output_text = str(resp)
+        except Exception as e:
+            output_text = f"Exception while running agent: {e}"
+
+    st.session_state.history.append(("agent", output_text))
+
+# --- Display chat history ---
+cols = st.columns([1, 3])
+with cols[0]:
+    st.subheader("Conversation")
+    for role, text in reversed(st.session_state.history):
+        if role == "user":
+            st.markdown(f"**You:** {text}")
+        else:
+            st.markdown(f"**Agent:** {text}")
+with cols[1]:
+    st.subheader("Details / Controls")
+    st.write("Model:", model_choice)
+    st.write("Temperature:", temperature)
+    if show_raw and submitted:
+        st.write("---")
+        st.subheader("Raw agent response")
+        st.json(resp if 'resp' in locals() else {})
