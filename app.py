@@ -24,7 +24,7 @@ class WeatherTool(BaseTool):
         except Exception as e:
             return f"Error fetching weather: {e}"
 
-    async def _arun(self, query: str):
+    def _arun(self, query: str):
         raise NotImplementedError("WeatherTool does not support async")
 
 # ----------------- Streamlit UI -----------------
@@ -50,7 +50,6 @@ agent = initialize_agent(
     llm=llm,
     agent=AgentType.ZERO_SHOT_REACT_DESCRIPTION,
     verbose=True,
-    handle_parsing_errors=True,
 )
 
 # Session state
