@@ -1,21 +1,15 @@
-%%writefile app.py
-# paste your entire Streamlit code here (the one you shared)
-
-# app.py
+#app.py
 import os
 import streamlit as st
 from typing import Dict, Any
 
 st.set_page_config(page_title="Colab → Streamlit Agent", layout="wide")
 
-# --- Helpers to load secrets safely ---
 def get_secret(name: str):
-    # 1) Streamlit secrets (recommended for Streamlit Cloud)
     try:
         val = st.secrets.get(name)
     except Exception:
         val = None
-    # 2) environment variable fallback
     if not val:
         val = os.environ.get(name)
     return val
@@ -51,7 +45,6 @@ def create_agent_instance(model: str, temperature_val: float) -> Dict[str, Any]:
     Create and return a dict with agent_executor or fallbacks.
     Cached so we don't re-init on every interaction.
     """
-    # We'll attempt to import the same libs you used in Colab.
     try:
         from langchain_google_genai import ChatGoogleGenerativeAI
         from langchain_core.tools import tool
@@ -59,7 +52,7 @@ def create_agent_instance(model: str, temperature_val: float) -> Dict[str, Any]:
     except Exception as e:
         return {"error": f"Missing package imports: {e}. Make sure requirements.txt includes required packages."}
 
-    # Create LLM
+    # Creating LLM
     google_key = get_secret("GEMINI_API_KEY")
     if not google_key:
         return {"error": "GEMINI_API_KEY is not set. Add it to Streamlit Secrets or the environment."}
@@ -70,13 +63,13 @@ def create_agent_instance(model: str, temperature_val: float) -> Dict[str, Any]:
         google_api_key=google_key
     )
 
-    # Create simple search tool (DuckDuckGo)
+    # simple search tool (DuckDuckGo)
     try:
         search_tool = DuckDuckGoSearchRun()
     except Exception:
         search_tool = None
 
-    # A simple weather tool using weatherstack (wrap as langchain tool if available)
+    # A simple weather tool using weatherstack
     def get_weather_data(city: str) -> dict:
         import requests
         ws_key = get_secret("WEATHERSTACK_KEY")
@@ -89,7 +82,6 @@ def create_agent_instance(model: str, temperature_val: float) -> Dict[str, Any]:
         except Exception as e:
             return {"error": str(e)}
 
-    # If langchain tool decorator exists, wrap; else provide callable
     try:
         from langchain_core.tools import tool as lc_tool
         @lc_tool
@@ -105,7 +97,7 @@ def create_agent_instance(model: str, temperature_val: float) -> Dict[str, Any]:
         from langchain.agents import create_react_agent, AgentExecutor
         from langchain import hub
 
-        # pull a default prompt (like you did in Colab)
+        # pulling a default prompt
         try:
             prompt = hub.pull("hwchase17/react")
         except Exception:
@@ -120,7 +112,6 @@ def create_agent_instance(model: str, temperature_val: float) -> Dict[str, Any]:
         agent_executor = AgentExecutor(agent=agent, tools=tools, verbose=False)
         return {"agent_executor": agent_executor, "llm": llm}
     except Exception as e:
-        # If agent creation fails, return an error artifact for UI to display
         return {"error": f"Failed to create agent: {e}"}
 
 
@@ -141,9 +132,7 @@ if submitted and user_input:
     st.session_state.history.append(("user", user_input))
     with st.spinner("Agent is thinking..."):
         try:
-            # call agent executor the same way you did in Colab
             resp = agent_executor.invoke({"input": user_input})
-            # agent_executor.invoke usually returns a dict with 'output' or similar; try to be safe
             output_text = ""
             if isinstance(resp, dict):
                 output_text = resp.get("output") or resp.get("result") or str(resp)
@@ -154,7 +143,7 @@ if submitted and user_input:
 
     st.session_state.history.append(("agent", output_text))
 
-# --- Display chat history ---
+# --- chat history ---
 cols = st.columns([1, 3])
 with cols[0]:
     st.subheader("Conversation")
