@@ -1,4 +1,3 @@
-#app.py
 import os
 import streamlit as st
 from typing import Dict, Any
@@ -14,7 +13,6 @@ def get_secret(name: str):
         val = os.environ.get(name)
     return val
 
-# --- UI: sidebar for config ---
 st.sidebar.title("Agent Configuration")
 GEMINI_API_KEY = get_secret("GEMINI_API_KEY")
 WEATHERSTACK_KEY = get_secret("WEATHERSTACK_KEY")
@@ -28,31 +26,42 @@ temperature = st.sidebar.slider("temperature", 0.0, 1.0, 0.0, 0.05)
 show_raw = st.sidebar.checkbox("Show raw agent output", value=False)
 clear_button = st.sidebar.button("Clear chat")
 
-# --- Chat area ---
 st.title("Agent UI — Streamlit Deployment")
 st.markdown("Type a query and the agent (LangChain + Google Generative) will respond.")
 
 if "history" not in st.session_state:
-    st.session_state.history = []  # list of (role, text) tuples
+    st.session_state.history = []
 
 if clear_button:
     st.session_state.history = []
 
-# --- Lazy import & agent creation ---
 @st.cache_resource(show_spinner=False)
 def create_agent_instance(model: str, temperature_val: float) -> Dict[str, Any]:
-    """
-    Create and return a dict with agent_executor or fallbacks.
-    Cached so we don't re-init on every interaction.
-    """
+    class FuncTool:
+        def __init__(self, name, func, description=""):
+            self.name = name
+            self.description = description
+            self.func = func
+        def run(self, *args, **kwargs):
+            return self.func(*args, **kwargs)
+        def __call__(self, *args, **kwargs):
+            return self.run(*args, **kwargs)
+        def __repr__(self):
+            return f"<FuncTool name={self.name}>"
+
     try:
         from langchain_google_genai import ChatGoogleGenerativeAI
-        from langchain_core.tools import tool
-        from langchain_community.tools import DuckDuckGoSearchRun
+        try:
+            from langchain_core.tools import tool as lc_tool
+        except Exception:
+            lc_tool = None
+        try:
+            from langchain_community.tools import DuckDuckGoSearchRun
+        except Exception:
+            DuckDuckGoSearchRun = None
     except Exception as e:
         return {"error": f"Missing package imports: {e}. Make sure requirements.txt includes required packages."}
 
-    # Creating LLM
     google_key = get_secret("GEMINI_API_KEY")
     if not google_key:
         return {"error": "GEMINI_API_KEY is not set. Add it to Streamlit Secrets or the environment."}
@@ -63,13 +72,14 @@ def create_agent_instance(model: str, temperature_val: float) -> Dict[str, Any]:
         google_api_key=google_key
     )
 
-    # simple search tool (DuckDuckGo)
-    try:
-        search_tool = DuckDuckGoSearchRun()
-    except Exception:
-        search_tool = None
+    search_tool = None
+    if DuckDuckGoSearchRun is not None:
+        try:
+            st.info("Initializing DuckDuckGo search tool...")
+            search_tool = DuckDuckGoSearchRun()
+        except Exception:
+            search_tool = None
 
-    # A simple weather tool using weatherstack
     def get_weather_data(city: str) -> dict:
         import requests
         ws_key = get_secret("WEATHERSTACK_KEY")
@@ -82,38 +92,47 @@ def create_agent_instance(model: str, temperature_val: float) -> Dict[str, Any]:
         except Exception as e:
             return {"error": str(e)}
 
-    try:
-        from langchain_core.tools import tool as lc_tool
-        @lc_tool
-        def weather_tool(city: str) -> str:
-            res = get_weather_data(city)
-            return str(res)
-    except Exception:
-        # fallback: simple function
+    weather_tool = None
+    if lc_tool is not None:
+        try:
+            @lc_tool
+            def _weather_tool_decorated(city: str) -> str:
+                res = get_weather_data(city)
+                return str(res)
+            weather_tool = _weather_tool_decorated
+        except Exception:
+            weather_tool = get_weather_data
+    else:
         weather_tool = get_weather_data
 
-    # Create React Agent (LangChain)
+    raw_tools = []
+    if search_tool:
+        raw_tools.append(search_tool)
+    raw_tools.append(weather_tool)
+
+    wrapped_tools = []
+    for idx, t in enumerate(raw_tools):
+        if hasattr(t, "name") and (callable(getattr(t, "run", None)) or callable(t)):
+            wrapped_tools.append(t)
+            continue
+        if callable(t):
+            name = getattr(t, "__name__", f"tool_{idx}")
+            wrapped_tools.append(FuncTool(name=name, func=t, description=f"Wrapped callable {name}"))
+            continue
+        wrapped_tools.append(FuncTool(name=f"tool_{idx}", func=lambda *a, **k: "tool not available"))
+
     try:
         from langchain.agents import create_react_agent, AgentExecutor
         from langchain import hub
-
-        # pulling a default prompt
         try:
             prompt = hub.pull("hwchase17/react")
         except Exception:
             prompt = None
-
-        tools = []
-        if search_tool:
-            tools.append(search_tool)
-        tools.append(weather_tool)
-
-        agent = create_react_agent(llm=llm, prompt=prompt, tools=tools)
-        agent_executor = AgentExecutor(agent=agent, tools=tools, verbose=False)
+        agent = create_react_agent(llm=llm, prompt=prompt, tools=wrapped_tools)
+        agent_executor = AgentExecutor(agent=agent, tools=wrapped_tools, verbose=False)
         return {"agent_executor": agent_executor, "llm": llm}
     except Exception as e:
         return {"error": f"Failed to create agent: {e}"}
-
 
 agent_bundle = create_agent_instance(model_choice, temperature)
 
@@ -123,7 +142,6 @@ if "error" in agent_bundle:
 
 agent_executor = agent_bundle.get("agent_executor")
 
-# --- Input box & submit ---
 with st.form("query_form", clear_on_submit=False):
     user_input = st.text_area("Your message", height=120, placeholder="Ask the agent anything...")
     submitted = st.form_submit_button("Send")
@@ -140,10 +158,8 @@ if submitted and user_input:
                 output_text = str(resp)
         except Exception as e:
             output_text = f"Exception while running agent: {e}"
-
     st.session_state.history.append(("agent", output_text))
 
-# --- chat history ---
 cols = st.columns([1, 3])
 with cols[0]:
     st.subheader("Conversation")
