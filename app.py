@@ -10,8 +10,8 @@ from langchain.tools import BaseTool
 
 # ----------------- Weather Tool -----------------
 class WeatherTool(BaseTool):
-    name = "get_weather"
-    description = "Get current weather for a given city. Input should be the city name."
+    name: str = "get_weather"  
+    description: str = "Get current weather for a given city. Input should be the city name."
 
     def _run(self, query: str):
         try:
