@@ -3,7 +3,6 @@ import streamlit as st
 from typing import Dict, Any
 
 st.set_page_config(page_title="Colab → Streamlit Agent", layout="wide")
-
 def get_secret(name: str):
     try:
         val = st.secrets.get(name)
@@ -16,22 +15,17 @@ def get_secret(name: str):
 st.sidebar.title("Agent Configuration")
 GEMINI_API_KEY = get_secret("GEMINI_API_KEY")
 WEATHERSTACK_KEY = get_secret("WEATHERSTACK_KEY")
-
 st.sidebar.markdown("**API keys** (set these in Streamlit Cloud / environment variables)")
 st.sidebar.write("GEMINI_API_KEY: " + ("🔒 set" if GEMINI_API_KEY else "❗ not set"))
 st.sidebar.write("WEATHERSTACK_KEY: " + ("🔒 set" if WEATHERSTACK_KEY else "❗ not set"))
-
 model_choice = st.sidebar.selectbox("LLM model", ["gemini-2.5-flash", "gemini-1.5-pro"], index=0)
 temperature = st.sidebar.slider("temperature", 0.0, 1.0, 0.0, 0.05)
 show_raw = st.sidebar.checkbox("Show raw agent output", value=False)
 clear_button = st.sidebar.button("Clear chat")
-
 st.title("Agent UI — Streamlit Deployment")
 st.markdown("Type a query and the agent (LangChain + Google Generative) will respond.")
-
 if "history" not in st.session_state:
     st.session_state.history = []
-
 if clear_button:
     st.session_state.history = []
 
@@ -46,6 +40,10 @@ def create_agent_instance(model: str, temperature_val: float) -> Dict[str, Any]:
             return self.func(*args, **kwargs)
         def __call__(self, *args, **kwargs):
             return self.run(*args, **kwargs)
+        def get(self, key, default=None):
+            return getattr(self, key, default)
+        def __getitem__(self, key):
+            return getattr(self, key)
         def __repr__(self):
             return f"<FuncTool name={self.name}>"
 
@@ -66,11 +64,7 @@ def create_agent_instance(model: str, temperature_val: float) -> Dict[str, Any]:
     if not google_key:
         return {"error": "GEMINI_API_KEY is not set. Add it to Streamlit Secrets or the environment."}
 
-    llm = ChatGoogleGenerativeAI(
-        model=model,
-        temperature=temperature_val,
-        google_api_key=google_key
-    )
+    llm = ChatGoogleGenerativeAI(model=model, temperature=temperature_val, google_api_key=google_key)
 
     search_tool = None
     if DuckDuckGoSearchRun is not None:
@@ -113,6 +107,10 @@ def create_agent_instance(model: str, temperature_val: float) -> Dict[str, Any]:
     wrapped_tools = []
     for idx, t in enumerate(raw_tools):
         if hasattr(t, "name") and (callable(getattr(t, "run", None)) or callable(t)):
+            if not hasattr(t, "get"):
+                def _get(k, default=None, _t=t):
+                    return getattr(_t, k, default)
+                setattr(t, "get", _get)
             wrapped_tools.append(t)
             continue
         if callable(t):
@@ -135,11 +133,9 @@ def create_agent_instance(model: str, temperature_val: float) -> Dict[str, Any]:
         return {"error": f"Failed to create agent: {e}"}
 
 agent_bundle = create_agent_instance(model_choice, temperature)
-
 if "error" in agent_bundle:
     st.error(agent_bundle["error"])
     st.stop()
-
 agent_executor = agent_bundle.get("agent_executor")
 
 with st.form("query_form", clear_on_submit=False):
